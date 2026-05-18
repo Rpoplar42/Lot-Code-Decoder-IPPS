@@ -212,7 +212,6 @@ def print_result(result: dict) -> None:
 KNOWN_BRANDS = sorted(BRAND_TO_MANUFACTURER.keys())
 
 def prompt(label: str, default: str = "") -> str:
-    """Prompt the user for input, with an optional default value."""
     suffix = f" [{default}]" if default else ""
     value = input(f"  {label}{suffix}: ").strip()
     return value if value else default
