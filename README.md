@@ -33,7 +33,7 @@ Example: `043025 MSKT2501552`
 
 ---
 
-## Usage
+## Usage for Testing with the Command Line Interface
 
 Run the interactive CLI:
 
