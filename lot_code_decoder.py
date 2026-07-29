@@ -1,10 +1,11 @@
 """
 Lot Code Decoder for IPPS
-Supports: Procter & Gamble (P&G) and Georgia Pacific (GP)
+Supports: Procter & Gamble (P&G), Georgia Pacific (GP), and Kimberly-Clark
 
 """
 
 from datetime import datetime, timedelta
+import re
 
 # ---------------------------------------------------------------------------
 # Brand → Manufacturer mapping
@@ -25,6 +26,17 @@ BRAND_TO_MANUFACTURER = {
     "brawny":       "Georgia Pacific",
     "dixie":        "Georgia Pacific",
     "vanity fair":  "Georgia Pacific",
+    #Kimberly Clark brands
+    "kleenex":      "Kimberly-Clark",
+    "scott":        "Kimberly-Clark",
+    "cottonelle":   "Kimberly-Clark",
+    "viva":         "Kimberly-Clark",
+    "huggies":      "Kimberly-Clark",
+    "pull-ups":     "Kimberly-Clark",
+    "goodnites":    "Kimberly-Clark",
+    "poise":        "Kimberly-Clark",
+    "depend":       "Kimberly-Clark",
+    "kotex":        "Kimberly-Clark",
 }
 
 # ---------------------------------------------------------------------------
@@ -63,6 +75,21 @@ GP_PLANTS = {
     "WAU": "Wauna",
     "MSK": "Muskogee",
 }
+
+# ---------------------------------------------------------------------------
+# Kimberly Clark plant identifiers (longer codes checked first to avoid partial matches)
+# Simple Dictionary composed of tuples that can be expanded with more plants
+# ---------------------------------------------------------------------------
+KC_PLANTS = [
+    ("MO", "Mobile"),
+    ("MT", "Marinette"),
+    ("C",  "Chester"),
+    ("H",  "Canada"),
+    ("R",  "Mexico"),
+    ("B",  "Beach Island"),
+    ("J",  "Jenks"),
+]
+    
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -112,14 +139,20 @@ def decode_pg(lot_code: str, reference_date: datetime) -> dict:
 
     # Plant: remaining characters — try each identifier in order
     remainder = code[4:]
+
+    # >>> NEW: skip any leading non-letter characters (e.g. an extra digit
+    # >>> NEW: between the date and the plant code) before matching identifiers.
+    letter_match = re.match(r'^[^A-Za-z]*([A-Za-z].*)$', remainder)          # <<< NEW LINE
+    plant_source = letter_match.group(1) if letter_match else remainder     # <<< NEW LINE
+
     plant = None
     for identifier, plant_name in PG_PLANTS:
-        if remainder.startswith(identifier):
+        if plant_source.startswith(identifier):      # <<< CHANGED: was `remainder.startswith(identifier)`
             plant = plant_name
             break
 
     if plant is None:
-        plant = f"Unknown ('{remainder}')"
+        plant = f"Unknown ('{plant_source}')"         # <<< CHANGED: was `f"Unknown ('{remainder}')"`
 
     return {
         "manufacturer": "Procter & Gamble",
@@ -136,6 +169,7 @@ def decode_pg(lot_code: str, reference_date: datetime) -> dict:
 
 def decode_gp(lot_code: str, reference_date: datetime) -> dict:
     # Strip spaces for parsing but keep original for display
+    code = lot_code.strip()
     code = lot_code.replace(" ", "")
 
     if len(code) < 6:
@@ -168,6 +202,97 @@ def decode_gp(lot_code: str, reference_date: datetime) -> dict:
         "age": _age_string(produced, reference_date),
     }
 
+# ---------------------------------------------------------------------------
+# Kimberly Clark decoder
+# ---------------------------------------------------------------------------
+
+def decode_kc(lot_code: str, reference_date: datetime) -> dict:
+    code = lot_code.strip()
+    code = code.replace(" ", "")
+
+    if "/" in code:
+        return _decode_kc_mexico(code, reference_date)
+
+    # Plant: one or more leading letters — match against KC_PLANTS,
+    # longest identifier first (list is pre-ordered) to avoid false
+    # partial matches, same approach as PG_PLANTS.
+    match = re.match(r'^([A-Za-z]+)(.*)$', code)
+    if not match:
+        raise ValueError(f"Could not find plant letter(s) in Kimberly-Clark code: '{lot_code}'")
+
+    letters, remainder = match.groups()
+
+    plant = None
+    for identifier, plant_name in KC_PLANTS:
+        if letters.startswith(identifier):
+            plant = plant_name
+            break
+
+    if plant is None:
+        plant = f"Unknown ('{letters}')"
+
+    if len(remainder) < 4:
+        raise ValueError(f"Kimberly-Clark date portion too short: '{remainder}'")
+
+    # Year: 1 digit normally, 2 digits if it starts with 2 or 3 (year 2025-2029ish)
+    # NOTE: this 2-vs-3 rule assumes single-digit years won't reach 2030+ until ~2032.
+    # Revisit this logic before then.
+    if remainder[0] in ("2", "3"):
+        year_str = remainder[0:2]
+        year = 2000 + int(year_str)
+        julian_str = remainder[2:5]
+    else:
+        year_str = remainder[0]
+        year = 2020 + int(year_str)
+        julian_str = remainder[1:4]
+
+    if not julian_str.isdigit() or len(julian_str) != 3:
+        raise ValueError(f"Could not parse Julian date from Kimberly-Clark code: '{remainder}'")
+
+    julian_day = int(julian_str)
+    produced = datetime(year, 1, 1) + timedelta(days=julian_day - 1)
+
+    return {
+        "manufacturer": "Kimberly-Clark",
+        "lot_code": lot_code,
+        "date_produced": produced.strftime("%B %d, %Y"),
+        "plant": plant,
+        "age": _age_string(produced, reference_date),
+    }
+
+def _decode_kc_mexico(code: str, reference_date: datetime) -> dict:
+    # Plant: still just the first letter, looked up the normal way
+    match = re.match(r'^([A-Za-z]+)', code)
+    if not match:
+        raise ValueError(f"Could not find plant letter in Kimberly-Clark code: '{code}'")
+
+    letters = match.group(1)
+    plant = None
+    for identifier, plant_name in KC_PLANTS:
+        if letters.startswith(identifier):
+            plant = plant_name
+            break
+    if plant is None:
+        plant = f"Unknown ('{letters}')"
+
+    # Date: pull out the DD/MM/YY chunk wherever it sits in the string
+    date_match = re.search(r'(\d{1,2})/(\d{1,2})/(\d{2})', code)
+    if not date_match:
+        raise ValueError(f"Could not find a date in Kimberly-Clark Mexico code: '{code}'")
+
+    day, month, year = date_match.groups()
+    try:
+        produced = datetime.strptime(f"{day}/{month}/{year}", "%d/%m/%y")
+    except ValueError:
+        raise ValueError(f"Invalid date '{date_match.group(0)}' in code: '{code}'")
+
+    return {
+        "manufacturer": "Kimberly-Clark",
+        "lot_code": code,
+        "date_produced": produced.strftime("%B %d, %Y"),
+        "plant": plant,
+        "age": _age_string(produced, reference_date),
+    }
 
 # ---------------------------------------------------------------------------
 # Main public interface
@@ -192,6 +317,8 @@ def decode(brand: str, reference_date_str: str, lot_code: str) -> dict:
         return decode_pg(lot_code, reference_date)
     elif manufacturer == "Georgia Pacific":
         return decode_gp(lot_code, reference_date)
+    elif manufacturer == "Kimberly-Clark":
+        return decode_kc(lot_code, reference_date)
     else:
         raise ValueError(f"No decoder implemented for manufacturer '{manufacturer}'")
 
