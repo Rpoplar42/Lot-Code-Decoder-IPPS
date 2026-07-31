@@ -142,17 +142,17 @@ def decode_pg(lot_code: str, reference_date: datetime) -> dict:
 
     # >>> NEW: skip any leading non-letter characters (e.g. an extra digit
     # >>> NEW: between the date and the plant code) before matching identifiers.
-    letter_match = re.match(r'^[^A-Za-z]*([A-Za-z].*)$', remainder)          # <<< NEW LINE
-    plant_source = letter_match.group(1) if letter_match else remainder     # <<< NEW LINE
+    letter_match = re.match(r'^[^A-Za-z]*([A-Za-z].*)$', remainder)          
+    plant_source = letter_match.group(1) if letter_match else remainder
 
     plant = None
     for identifier, plant_name in PG_PLANTS:
-        if plant_source.startswith(identifier):      # <<< CHANGED: was `remainder.startswith(identifier)`
+        if plant_source.startswith(identifier):
             plant = plant_name
             break
 
     if plant is None:
-        plant = f"Unknown ('{plant_source}')"         # <<< CHANGED: was `f"Unknown ('{remainder}')"`
+        plant = f"Unknown ('{plant_source}')"
 
     return {
         "manufacturer": "Procter & Gamble",
@@ -168,7 +168,6 @@ def decode_pg(lot_code: str, reference_date: datetime) -> dict:
 # ---------------------------------------------------------------------------
 
 def decode_gp(lot_code: str, reference_date: datetime) -> dict:
-    # Strip spaces for parsing but keep original for display
     code = lot_code.strip()
     code = lot_code.replace(" ", "")
 
@@ -235,7 +234,7 @@ def decode_kc(lot_code: str, reference_date: datetime) -> dict:
         raise ValueError(f"Kimberly-Clark date portion too short: '{remainder}'")
 
     # Year: 1 digit normally, 2 digits if it starts with 2 or 3 (year 2025-2029ish)
-    # NOTE: this 2-vs-3 rule assumes single-digit years won't reach 2030+ until ~2032.
+    # This 2-vs-3 rule assumes single-digit years won't reach 2030+ until ~2032.
     # Revisit this logic before then.
     if remainder[0] in ("2", "3"):
         year_str = remainder[0:2]
@@ -261,7 +260,6 @@ def decode_kc(lot_code: str, reference_date: datetime) -> dict:
     }
 
 def _decode_kc_mexico(code: str, reference_date: datetime) -> dict:
-    # Plant: still just the first letter, looked up the normal way
     match = re.match(r'^([A-Za-z]+)', code)
     if not match:
         raise ValueError(f"Could not find plant letter in Kimberly-Clark code: '{code}'")
@@ -275,7 +273,7 @@ def _decode_kc_mexico(code: str, reference_date: datetime) -> dict:
     if plant is None:
         plant = f"Unknown ('{letters}')"
 
-    # Date: pull out the DD/MM/YY chunk wherever it sits in the string
+    # Date: pulls out the DD/MM/YY chunk wherever it sits in the string
     date_match = re.search(r'(\d{1,2})/(\d{1,2})/(\d{2})', code)
     if not date_match:
         raise ValueError(f"Could not find a date in Kimberly-Clark Mexico code: '{code}'")
