@@ -141,8 +141,6 @@ def decode_pg(lot_code: str, reference_date: datetime) -> dict:
     # Plant: remaining characters — try each identifier in order
     remainder = code[4:]
 
-    # >>> NEW: skip any leading non-letter characters (e.g. an extra digit
-    # >>> NEW: between the date and the plant code) before matching identifiers.
     letter_match = re.match(r'^[^A-Za-z]*([A-Za-z].*)$', remainder)          
     plant_source = letter_match.group(1) if letter_match else remainder
 
