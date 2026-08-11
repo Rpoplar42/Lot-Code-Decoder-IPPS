@@ -1,11 +1,12 @@
 """
 Lot Code Decoder for IPPS
-Supports: Procter & Gamble (P&G), Georgia Pacific (GP), and Kimberly-Clark
+Supports: Procter & Gamble (P&G), Georgia Pacific (GP), Kimberly-Clark, and Private Labels
 
 """
 
 from datetime import datetime, timedelta
 import re
+import calendar
 
 # ---------------------------------------------------------------------------
 # Brand → Manufacturer mapping
@@ -293,22 +294,227 @@ def _decode_kc_mexico(code: str, reference_date: datetime) -> dict:
     }
 
 # ---------------------------------------------------------------------------
+# Private Label manufacturer identification
+# ---------------------------------------------------------------------------
+
+CLEARWATER_PLANTS = ("LE BRT", "SH BHT", "SH HHT", "EL BRT", "LV BRT")
+
+def get_pl_manufacturer(lot_code: str) -> str | None:
+    code = lot_code.strip()
+
+    # Kruger: starts with SHMD, EMD, or MMD
+    if code.startswith(("SHMD", "EMD", "MMD")):
+        return "Kruger"
+
+    # First Quality: starts with LH or AN
+    if code.startswith(("LH", "AN")):
+        return "First Quality"
+
+    # Clearwater: starts with one of the known plant combos
+    if code.startswith(CLEARWATER_PLANTS):
+        return "Clearwater"
+
+    # Irving: all digits with exactly one trailing letter
+    if re.fullmatch(r'\d+[A-Za-z]', code):
+        return "Irving"
+
+    # Sofidel: digits, periods, spaces, colons only — no letters
+    if re.fullmatch(r'[\d.\s:]+', code):
+        return "Sofidel"
+
+    # Georgia Pacific: 6-digit date followed by a 2-3 letter plant code
+    if re.match(r'^\d{6}\s?[A-Za-z]{2,3}', code):
+        return "Georgia Pacific"
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Private Label decoder — dispatches by manufacturer, then to a date decoder
+# ---------------------------------------------------------------------------
+
+def decode_pl(lot_code: str, reference_date: datetime) -> dict:
+    pl_manufacturer = get_pl_manufacturer(lot_code)
+
+    if pl_manufacturer == "Georgia Pacific":
+        return decode_gp(lot_code, reference_date)
+    elif pl_manufacturer == "Kruger":
+        return decode_time_kruger(lot_code, reference_date)
+    elif pl_manufacturer == "First Quality":
+        return decode_time_first_quality(lot_code, reference_date)
+    elif pl_manufacturer == "Clearwater":
+        return decode_time_clearwater(lot_code, reference_date)
+    elif pl_manufacturer == "Irving":
+        return decode_time_irving(lot_code, reference_date)
+    elif pl_manufacturer == "Sofidel":
+        return decode_time_sofidel(lot_code, reference_date)
+    else:
+        raise ValueError(f"Could not identify private label manufacturer for code: '{lot_code}'")
+
+
+def decode_time_kruger(lot_code: str, reference_date: datetime) -> dict:
+    code = lot_code.strip().replace(" ", "")
+
+    match = re.match(r'^(SHMD|EMD|MMD)(\d{3})(\d{2})', code)
+    if not match:
+        raise ValueError(f"Could not parse Kruger lot code: '{lot_code}'")
+
+    plant, julian_str, year_str = match.groups()
+    julian_day = int(julian_str)
+    year = 2000 + int(year_str)
+
+    if not (1 <= julian_day <= 366):
+        raise ValueError(f"Invalid Julian day '{julian_str}' in Kruger code: '{lot_code}'")
+    if not (2020 <= year <= 2030):
+        raise ValueError(f"Implausible year '{year_str}' in Kruger code: '{lot_code}'")
+
+    produced = datetime(year, 1, 1) + timedelta(days=julian_day - 1)
+
+    return {
+        "manufacturer": "Kruger",
+        "lot_code": lot_code,
+        "date_produced": produced.strftime("%B %d, %Y"),
+        "age": _age_string(produced, reference_date),
+    }
+
+def decode_time_first_quality(lot_code: str, reference_date: datetime) -> dict:
+    code = lot_code.strip()
+
+    # Allow an optional space between the day, month abbreviation, and year,
+    # since real-world codes are inconsistently spaced.
+    date_match = re.search(r'(\d{2})\s?([A-Za-z]{3})\s?(\d{2})', code)
+    if not date_match:
+        raise ValueError(f"Could not find a date in First Quality code: '{lot_code}'")
+
+    day, month_abbr, year = date_match.groups()
+    date_str = f"{day}{month_abbr}{year}"
+    try:
+        produced = datetime.strptime(date_str, "%d%b%y")
+    except ValueError:
+        raise ValueError(f"Could not parse date '{date_str}' in First Quality code: '{lot_code}'")
+
+    return {
+        "manufacturer": "First Quality",
+        "lot_code": lot_code,
+        "date_produced": produced.strftime("%B %d, %Y"),
+        "age": _age_string(produced, reference_date),
+    }
+
+def decode_time_clearwater(lot_code: str, reference_date: datetime) -> dict:
+    code = lot_code.strip()
+
+    date_match = re.search(r'(\d{1,2})/(\d{1,2})/(\d{2})', code)
+    if not date_match:
+        raise ValueError(f"Could not find a date in Clearwater code: '{lot_code}'")
+
+    month, day, year = date_match.groups()
+    month_int, day_int = int(month), int(day)
+
+    if not (1 <= month_int <= 12):
+        raise ValueError(f"Invalid month '{month}' in Clearwater code: '{lot_code}'")
+    if not (1 <= day_int <= 31):
+        raise ValueError(f"Invalid day '{day}' in Clearwater code: '{lot_code}'")
+
+    date_str = f"{month}/{day}/{year}"
+    try:
+        produced = datetime.strptime(date_str, "%m/%d/%y")
+    except ValueError:
+        raise ValueError(f"Invalid date '{date_str}' in Clearwater code: '{lot_code}'")
+
+    return {
+        "manufacturer": "Clearwater",
+        "lot_code": lot_code,
+        "date_produced": produced.strftime("%B %d, %Y"),
+        "age": _age_string(produced, reference_date),
+    }
+
+def decode_time_irving(lot_code: str, reference_date: datetime) -> dict:
+    code = lot_code.strip()
+
+    match = re.fullmatch(r'(\d+)([A-Za-z])', code)
+    if not match:
+        raise ValueError(f"Could not parse Irving lot code: '{lot_code}'")
+
+    digits, letter = match.groups()
+
+    if len(digits) < 5:
+        raise ValueError(f"Irving lot code too short: '{lot_code}'")
+
+    # digit 0: constant prefix (unused)
+    # digit 1: year digit
+    # digits 2-4: 3-digit Julian day
+    year_digit = digits[1]
+    julian_str = digits[2:5]
+
+    if not year_digit.isdigit() or not julian_str.isdigit():
+        raise ValueError(f"Could not parse date from Irving code: '{lot_code}'")
+
+    year = 2020 + int(year_digit)
+    julian_day = int(julian_str)
+
+    if not (1 <= julian_day <= 366):
+        raise ValueError(f"Invalid Julian day '{julian_str}' in Irving code: '{lot_code}'")
+
+    produced = datetime(year, 1, 1) + timedelta(days=julian_day - 1)
+
+    return {
+        "manufacturer": "Irving",
+        "lot_code": lot_code,
+        "date_produced": produced.strftime("%B %d, %Y"),
+        "age": _age_string(produced, reference_date),
+    }
+
+def decode_time_sofidel(lot_code: str, reference_date: datetime) -> dict:
+    digits = re.sub(r'[^0-9]', '', lot_code.strip())
+
+    if len(digits) < 9:
+        raise ValueError(f"Sofidel lot code too short: '{lot_code}'")
+
+    # digits 0-3: prefix/plant+line code (unused)
+    # digits 4-5: day
+    # digits 6-7: month
+    # digit 8: year digit
+    day = int(digits[4:6])
+    month = int(digits[6:8])
+    year = 2020 + int(digits[8])
+
+    if not (1 <= month <= 12):
+        raise ValueError(f"Invalid month '{month}' in Sofidel code: '{lot_code}'")
+    max_day = calendar.monthrange(year, month)[1]
+    if not (1 <= day <= max_day):
+        raise ValueError(f"Invalid day '{day}' for month {month} in Sofidel code: '{lot_code}'")
+
+    produced = datetime(year, month, day)
+
+    return {
+        "manufacturer": "Sofidel",
+        "lot_code": lot_code,
+        "date_produced": produced.strftime("%B %d, %Y"),
+        "age": _age_string(produced, reference_date),
+    }
+
+# ---------------------------------------------------------------------------
 # Main public interface
 # ---------------------------------------------------------------------------
 
-def decode(brand: str, reference_date_str: str, lot_code: str) -> dict: 
-    manufacturer = get_manufacturer(brand)
-    if manufacturer is None:
-        raise ValueError(
-            f"Unknown brand '{brand}'. Add it to BRAND_TO_MANUFACTURER or "
-            "specify the manufacturer directly."
-        )
-
+def decode(brand: str, reference_date_str: str, lot_code: str) -> dict:
     try:
         reference_date = datetime.strptime(reference_date_str.strip(), "%m/%d/%Y")
     except ValueError:
         raise ValueError(
             f"Invalid reference date '{reference_date_str}'. Use MM/DD/YYYY format."
+        )
+
+    # Private label codes identify their own manufacturer from the code itself,
+    # so they skip the normal BRAND_TO_MANUFACTURER lookup.
+    if brand.strip().lower() == "private label":
+        return decode_pl(lot_code, reference_date)
+
+    manufacturer = get_manufacturer(brand)
+    if manufacturer is None:
+        raise ValueError(
+            f"Unknown brand '{brand}'. Add it to BRAND_TO_MANUFACTURER or "
+            "specify the manufacturer directly."
         )
 
     if manufacturer == "P&G":
@@ -319,7 +525,6 @@ def decode(brand: str, reference_date_str: str, lot_code: str) -> dict:
         return decode_kc(lot_code, reference_date)
     else:
         raise ValueError(f"No decoder implemented for manufacturer '{manufacturer}'")
-
 
 def print_result(result: dict) -> None:
     """Pretty-print a decode result."""
@@ -334,7 +539,7 @@ def print_result(result: dict) -> None:
 # Interactive CLI
 # ---------------------------------------------------------------------------
 
-KNOWN_BRANDS = sorted(BRAND_TO_MANUFACTURER.keys())
+KNOWN_BRANDS = sorted(BRAND_TO_MANUFACTURER.keys()) + ["private label"]
 
 def prompt(label: str, default: str = "") -> str:
     suffix = f" [{default}]" if default else ""
@@ -377,7 +582,7 @@ def cli():
             result = decode(brand, last_date, lot_code)
             print()
             print_result(result)
-        except ValueError as e:
+        except (ValueError, NotImplementedError) as e:
             print(f"\n  ⚠  Error: {e}")
 
         # Ask to decode another code for the same brand/date
@@ -391,7 +596,7 @@ def cli():
                     result = decode(brand, last_date, lot_code)
                     print()
                     print_result(result)
-                except ValueError as e:
+                except (ValueError, NotImplementedError) as e:
                     print(f"\n  ⚠  Error: {e}")
             else:
                 break
