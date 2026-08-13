@@ -87,7 +87,7 @@ KC_PLANTS = [
     ("C",  "Chester"),
     ("H",  "Canada"),
     ("R",  "Mexico"),
-    ("B",  "Beach Island"),
+    ("B",  "Beech Island"),
     ("J",  "Jenks"),
 ]
     
@@ -328,7 +328,7 @@ def get_pl_manufacturer(lot_code: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Private Label decoder — dispatches by manufacturer, then to a date decoder
+# Private Label decoder
 # ---------------------------------------------------------------------------
 
 def decode_pl(lot_code: str, reference_date: datetime) -> dict:
@@ -378,8 +378,6 @@ def decode_time_kruger(lot_code: str, reference_date: datetime) -> dict:
 def decode_time_first_quality(lot_code: str, reference_date: datetime) -> dict:
     code = lot_code.strip()
 
-    # Allow an optional space between the day, month abbreviation, and year,
-    # since real-world codes are inconsistently spaced.
     date_match = re.search(r'(\d{2})\s?([A-Za-z]{3})\s?(\d{2})', code)
     if not date_match:
         raise ValueError(f"Could not find a date in First Quality code: '{lot_code}'")
@@ -438,7 +436,6 @@ def decode_time_irving(lot_code: str, reference_date: datetime) -> dict:
     if len(digits) < 5:
         raise ValueError(f"Irving lot code too short: '{lot_code}'")
 
-    # digit 0: constant prefix (unused)
     # digit 1: year digit
     # digits 2-4: 3-digit Julian day
     year_digit = digits[1]
@@ -468,7 +465,6 @@ def decode_time_sofidel(lot_code: str, reference_date: datetime) -> dict:
     if len(digits) < 9:
         raise ValueError(f"Sofidel lot code too short: '{lot_code}'")
 
-    # digits 0-3: prefix/plant+line code (unused)
     # digits 4-5: day
     # digits 6-7: month
     # digit 8: year digit
@@ -525,7 +521,6 @@ def decode(brand: str, reference_date_str: str, lot_code: str) -> dict:
         raise ValueError(f"No decoder implemented for manufacturer '{manufacturer}'")
 
 def print_result(result: dict) -> None:
-    """Pretty-print a decode result."""
     print("-" * 40)
     for key, value in result.items():
         label = key.replace("_", " ").title()
